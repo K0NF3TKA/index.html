@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Uproszczona wizualizacja celu</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #1a202c; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+        #container { width: 100vw; height: 100vh; display: flex; justify-content: center; align-items: center; }
+        canvas { display: block; }
+        /* Стили для #info удалены */
+    </style>
+</head>
+<body>
+    <div id="container"></div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        let scene, camera, renderer, controls;
+        let shipwreckGroup; // Группа для всех частей корабля
+        let seabed; // Морское дно
+        let particleSystem; // Система частиц
+        const particleCount = 2500; // Количество частиц
+        let mainForceArrow, flowDirectionArrow; // Наши новые стрелки
+
+        // Функция для генерации случайного числа в диапазоне
+        function rand(min, max) {
+            return Math.random() * (max - min) + min;
+        }
+
+        function init() {
+            // --- Базовая конфигурация сцены ---
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x2d3748); // Фон сцены
+            scene.fog = new THREE.Fog(0x2d3748, 20, 120); // Туман для эффекта глубины
+
+            // --- Камера ---
+            camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(20, 18, 25); // Начальная позиция камеры
+            camera.lookAt(0, 0, 0); // Камера смотрит на центр сцены
+
+            // --- Рендерер ---
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.shadowMap.enabled = true; // Включение теней
+            renderer.shadowMap.type = THREE.PCFSoftShadowMap; // Мягкие тени
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            // --- Освещение ---
+            const ambientLight = new THREE.AmbientLight(0x708090, 1.2); // Окружающий свет
+            scene.add(ambientLight);
+
+            const directionalLight = new THREE.DirectionalLight(0xffefd5, 1.8); // Направленный свет (солнце)
+            directionalLight.position.set(30, 40, 20);
+            directionalLight.castShadow = true; // Свет отбрасывает тень
+            directionalLight.shadow.mapSize.width = 2048; // Качество тени
+            directionalLight.shadow.mapSize.height = 2048;
+            directionalLight.shadow.camera.near = 1;
+            directionalLight.shadow.camera.far = 150;
+            directionalLight.shadow.camera.left = -50;
+            directionalLight.shadow.camera.right = 50;
+            directionalLight.shadow.camera.top = 50;
+            directionalLight.shadow.camera.bottom = -50;
+            scene.add(directionalLight);
+            
+            // --- Морское дно ---
+            const seabedSize = 120; // Размер дна
+            const seabedSegments = 50; // Количество сегментов (для рельефа)
+            const seabedGeometry = new THREE.PlaneGeometry(seabedSize, seabedSize, seabedSegments, seabedSegments);
+            const positions = seabedGeometry.attributes.position;
+            // Создание простого случайного рельефа дна
+            for (let i = 0; i < positions.count; i++) {
+                const y = positions.getY(i);
+                positions.setY(i, y + (Math.random() - 0.5) * 1.5); 
+            }
+            seabedGeometry.computeVertexNormals(); // Расчет нормалей для корректного освещения
+
+            const seabedMaterial = new THREE.MeshStandardMaterial({
+                color: 0x776644, // Цвет песка
+                roughness: 0.95,
+                metalness: 0.05,
+            });
+            seabed = new THREE.Mesh(seabedGeometry, seabedMaterial);
+            seabed.rotation.x = -Math.PI / 2; // Поворот, чтобы плоскость была горизонтальной
+            seabed.position.y = -3; // Позиция дна
+            seabed.receiveShadow = true; // Дно принимает тени
+            scene.add(seabed);
+
+            // --- Затонувший корабль (упрощенная модель) ---
+            shipwreckGroup = new THREE.Group(); 
+            const shipMaterial = new THREE.MeshStandardMaterial({
+                color: 0x5c3a21, // Цвет ржавчины
+                roughness: 0.85,
+                metalness: 0.4,
+                side: THREE.DoubleSide 
+            });
+
+            // Основной корпус
+            const hullBaseGeometry = new THREE.BoxGeometry(14, 3.5, 4.5); // Длина, высота, ширина
+            const hullBase = new THREE.Mesh(hullBaseGeometry, shipMaterial);
+            hullBase.castShadow = true;
+            hullBase.receiveShadow = true;
+            shipwreckGroup.add(hullBase);
+
+            // Нос (упрощенный)
+            const bowGeometry = new THREE.BoxGeometry(4, 3.3, 4.0);
+            const bowPos = bowGeometry.attributes.position;
+            for (let i = 0; i < bowPos.count; i++) {
+                if (bowPos.getX(i) > 0) { 
+                     bowPos.setZ(i, bowPos.getZ(i) * (1 - bowPos.getX(i)/2 * 0.3)); 
+                }
+            }
+            bowGeometry.computeVertexNormals();
+            const bow = new THREE.Mesh(bowGeometry, shipMaterial);
+            bow.position.x = 7; // Смещение носа вперед
+            bow.castShadow = true;
+            shipwreckGroup.add(bow);
+
+            // Корма (упрощенная)
+            const sternGeometry = new THREE.BoxGeometry(3, 3.4, 4.2);
+            const stern = new THREE.Mesh(sternGeometry, shipMaterial);
+            stern.position.x = -7.5; // Смещение кормы назад
+            stern.castShadow = true;
+            shipwreckGroup.add(stern);
+            
+            // Главная надстройка
+            const superstructureMainGeometry = new THREE.BoxGeometry(4, 2.5, 3);
+            const superstructureMain = new THREE.Mesh(superstructureMainGeometry, shipMaterial);
+            superstructureMain.position.set(-1.5, 1.75 + 1.25, 0); // Позиция на корпусе
+            superstructureMain.castShadow = true;
+            shipwreckGroup.add(superstructureMain);
+
+            // Мостик/меньшая надстройка
+            const bridgeGeometry = new THREE.BoxGeometry(2, 1.5, 2.5);
+            const bridge = new THREE.Mesh(bridgeGeometry, shipMaterial);
+            bridge.position.set(-1.5, 1.75 + 1.25 + 1.25, 0); // Позиция на главной надстройке
+            bridge.castShadow = true;
+            shipwreckGroup.add(bridge);
+
+            // Установка позиции и ориентации всей группы корабля
+            shipwreckGroup.position.set(0, -1.0, 0);
+            shipwreckGroup.rotation.y = Math.PI / 7; // Поворот вокруг оси Y
+            shipwreckGroup.rotation.z = Math.PI / 25; // Легкий наклон
+            scene.add(shipwreckGroup);
+
+            // --- Частицы воды ---
+            const particleGeometry = new THREE.BufferGeometry();
+            const pPositions = new Float32Array(particleCount * 3);
+            const pColors = new Float32Array(particleCount * 3); 
+            const baseColor = new THREE.Color(0x77aaff); // Базовый цвет частиц
+
+            for (let i = 0; i < particleCount; i++) {
+                pPositions[i * 3] = rand(-40, 20); // X
+                pPositions[i * 3 + 1] = rand(-2.5, 12); // Y
+                pPositions[i * 3 + 2] = rand(-20, 20); // Z
+                
+                // Случайные оттенки синего
+                pColors[i * 3] = baseColor.r + rand(-0.1, 0.1);
+                pColors[i * 3 + 1] = baseColor.g + rand(-0.1, 0.1);
+                pColors[i * 3 + 2] = baseColor.b + rand(-0.1, 0.1);
+            }
+            particleGeometry.setAttribute('position', new THREE.BufferAttribute(pPositions, 3));
+            particleGeometry.setAttribute('color', new THREE.BufferAttribute(pColors, 3));
+            
+            const particleMaterial = new THREE.PointsMaterial({
+                size: 0.25,
+                transparent: true,
+                opacity: 0.65,
+                blending: THREE.AdditiveBlending, // Эффект свечения
+                vertexColors: true, // Использование цветов вершин
+                sizeAttenuation: true // Уменьшение размера частиц с расстоянием
+            });
+            particleSystem = new THREE.Points(particleGeometry, particleMaterial);
+            scene.add(particleSystem);
+
+            // --- Новые стрелки ---
+            // 1. Стрелка силы сопротивления на корабле
+            const shipCenter = new THREE.Vector3();
+            new THREE.Box3().setFromObject(shipwreckGroup).getCenter(shipCenter);
+            
+            const mainForceDirection = new THREE.Vector3(1, 0, 0); // Изначально вдоль оси X
+            mainForceArrow = new THREE.ArrowHelper(
+                mainForceDirection, 
+                shipCenter, // Начало в центре корабля
+                6, // Длина стрелки
+                0xff0000, // Красный цвет
+                1.5, // Длина наконечника
+                0.8  // Ширина наконечника
+            );
+            scene.add(mainForceArrow);
+
+            // 2. Стрелка направления потока частиц
+            const flowArrowOrigin = new THREE.Vector3(-25, 5, 0); // Слева и немного выше
+            const flowArrowDirection = new THREE.Vector3(1, 0, 0); // Указывает общее направление потока
+            flowDirectionArrow = new THREE.ArrowHelper(
+                flowArrowDirection,
+                flowArrowOrigin,
+                10, // Длина
+                0x00ff00, // Зеленый цвет
+                2,  // Длина наконечника
+                1   // Ширина наконечника
+            );
+            scene.add(flowDirectionArrow);
+
+            // --- Контроллер камеры ---
+            controls = new OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true; // Плавное вращение
+            controls.dampingFactor = 0.04; 
+            controls.screenSpacePanning = false;
+            controls.minDistance = 8; // Минимальное приближение
+            controls.maxDistance = 150; // Максимальное отдаление
+            controls.maxPolarAngle = Math.PI / 1.8; // Ограничение угла обзора сверху/снизу
+
+            // --- Обработка изменения размера окна ---
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        const shipBoundingBox = new THREE.Box3(); // Bounding box для корабля (для детекции столкновений частиц)
+
+        function animateParticles() {
+            const positions = particleSystem.geometry.attributes.position.array;
+            const colors = particleSystem.geometry.attributes.color.array;
+            const flowSpeed = 0.06 + Math.random() * 0.03; // Скорость потока
+
+            shipwreckGroup.updateMatrixWorld(); // Обновление мировой матрицы для группы корабля
+            shipBoundingBox.setFromObject(shipwreckGroup, true); // Обновление bounding box
+
+            const shipCenter = new THREE.Vector3();
+            shipBoundingBox.getCenter(shipCenter); // Получение центра bounding box
+
+            for (let i = 0; i < particleCount; i++) {
+                const ix = i * 3, iy = i * 3 + 1, iz = i * 3 + 2;
+                positions[ix] += flowSpeed; // Движение частиц вправо
+
+                // Если частица вылетела за правую границу, переносим ее налево
+                if (positions[ix] > 50) { 
+                    positions[ix] = -50 - rand(0,10);
+                    positions[iy] = rand(-2.5, 12); // Случайная высота
+                    positions[iz] = rand(-20, 20); // Случайная глубина
+                }
+
+                const particleCurrentPos = new THREE.Vector3(positions[ix], positions[iy], positions[iz]);
+                
+                // Упрощенное "обтекание" корабля
+                if (shipBoundingBox.containsPoint(particleCurrentPos)) {
+                    // Если частица находится внутри bounding box корабля
+                    const dirToCenter = particleCurrentPos.clone().sub(shipCenter).normalize();
+                    // "Выталкиваем" частицу из bounding box
+                    positions[ix] -= dirToCenter.x * 0.5 + flowSpeed * 2; 
+                    positions[iy] += dirToCenter.y * 0.1 + (Math.random()-0.5) * 0.2; 
+                    positions[iz] += dirToCenter.z * 0.3 + (Math.random()-0.5) * 0.3; 
+
+                    // Изменение цвета частицы при "столкновении"
+                    colors[ix] = 1.0; colors[iy] = 0.5 + rand(0,0.5); colors[iz] = 0.2; 
+                } else {
+                    // Возврат к базовому цвету
+                    const baseColor = new THREE.Color(0x77aaff);
+                    colors[ix] = baseColor.r + rand(-0.1, 0.1);
+                    colors[iy] = baseColor.g + rand(-0.1, 0.1);
+                    colors[iz] = baseColor.b + rand(-0.1, 0.1);
+                }
+            }
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            particleSystem.geometry.attributes.color.needsUpdate = true;
+        }
+        
+        function updateArrowsLogic() {
+            // Обновление стрелки силы на корабле
+            const shipCenter = new THREE.Vector3();
+            shipwreckGroup.updateMatrixWorld(true); 
+            new THREE.Box3().setFromObject(shipwreckGroup).getCenter(shipCenter);
+            mainForceArrow.position.copy(shipCenter);
+
+            const worldQuaternion = new THREE.Quaternion();
+            shipwreckGroup.getWorldQuaternion(worldQuaternion);
+            const forceDirection = new THREE.Vector3(1, 0, 0); // Базовое направление потока (вдоль мировой оси X)
+            // Для упрощения, направление силы остается вдоль мировой оси X,
+            // так как частицы движутся вдоль этой оси.
+            mainForceArrow.setDirection(forceDirection.normalize());
+
+            // Стрелка направления потока частиц остается статической
+        }
+
+        // Главный цикл анимации
+        function animate() {
+            requestAnimationFrame(animate); // Цикл анимации
+            controls.update(); // Обновление контроллера камеры
+            animateParticles(); // Анимация частиц
+            updateArrowsLogic(); // Обновление стрелок
+            renderer.render(scene, camera); // Рендеринг сцены
+        }
+
+        init(); // Инициализация сцены
+        animate(); // Запуск анимации
+    </script>
+</body>
+</html>
